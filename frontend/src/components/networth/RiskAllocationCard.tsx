@@ -37,7 +37,9 @@ export function RiskAllocationCard({ riskLevels, isLoading }: RiskAllocationCard
                     {tier.items.map((item) => (
                       <li key={item.key} className="flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
-                          {item.key === "cash" ? t("netWorth.assetClass.cash") : item.name}
+                          {item.key === "cash" || item.key === "deposits"
+                            ? t(`netWorth.assetClass.${item.key}` as TranslationKey)
+                            : item.name}
                         </span>
                         <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-surface-2">
                           <span

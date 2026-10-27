@@ -51,6 +51,17 @@ async def test_idle_cash_ignores_investment_accounts(client: AsyncClient, catego
     assert "idle_cash" not in await _alert_keys(client)
 
 
+async def test_idle_cash_ignores_savings_accounts(client: AsyncClient, categories):
+    savings = await client.post("/accounts", json={"name": "Deposit", "type": "savings", "currency": "USD"})
+    await client.post(
+        "/transactions",
+        json=_txn(savings.json()["id"], type="income", amount="5000.00",
+                  category_id=categories["Salary"]["id"], date=STALE_DATE),
+    )
+
+    assert "idle_cash" not in await _alert_keys(client)
+
+
 async def test_idle_cash_includes_debit_cards(client: AsyncClient, categories):
     debit_card = await client.post(
         "/accounts", json={"name": "Debit card", "type": "debit_card", "currency": "USD"}

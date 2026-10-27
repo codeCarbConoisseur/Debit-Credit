@@ -520,9 +520,12 @@ negative (a withdrawal against the goal) but not zero.
 
 ## Assets & Net Worth
 
-Assets are manually tracked, non-cash net-worth components — investments, crypto, real estate,
-vehicles, precious metals, etc. Cash is **not** an asset; it's derived automatically from account
-balances and shows up in the net worth summary alongside assets, not as an `Asset` row.
+Assets are manually tracked, non-account net-worth components — investments, crypto, real estate,
+vehicles, precious metals, etc. Account balances are derived from transactions: `savings` accounts
+appear as **Deposits**, while checking, debit-card, cash and investment-account balances appear as
+**Available cash**. Both groups remain in total net worth; transferring between them does not change
+that total. Savings accounts are excluded from the idle-cash alert. Neither group is stored as an
+`Asset` row, so a bank deposit should not also be created as an asset.
 
 Each asset has a value **history** (`AssetValuation` rows, one per date) rather than a single
 number — creating an asset seeds its first valuation, and you add more over time to track

@@ -10,7 +10,7 @@ interface AssetAllocationCardProps {
 }
 
 // Breakdown items come from the backend with a machine-readable `key`
-// ("cash" or an AssetClass value) — translate the label locally instead of
+// ("cash", "deposits", or an AssetClass value) — translate the label locally instead of
 // showing the backend's (Russian-only) pre-rendered `name`.
 function breakdownLabelKey(key: string): TranslationKey {
   return `netWorth.assetClass.${key}` as TranslationKey;

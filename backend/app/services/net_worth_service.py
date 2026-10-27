@@ -1,16 +1,17 @@
 """Net worth aggregation: a single trend line plus a percent breakdown by
 asset class.
 
-Design note: "Cash" is not stored anywhere — it's derived live from
-Account/Transaction data (checking/debit-card/savings/cash/investment accounts) so the
-Transactions feature stays the single source of truth for liquid money.
+Design note: "Cash" and "Deposits" are not stored anywhere — both are derived
+live from Account/Transaction data. Savings accounts are deposits; checking,
+debit-card, cash and investment-account balances are available cash. The
+Transactions feature stays the single source of truth for money in accounts.
 Investment accounts count here too: their balance is uninvested/unallocated
 money sitting on the account, not the market value of what's actually
 invested — that value is still tracked manually via Asset/AssetValuation,
 same as every other class (investments, crypto, real estate, vehicles,
 precious metals, other). Without this, money deposited into an investment
 account but not yet turned into a valued Asset silently disappeared from
-net worth. Both halves are collapsed into one
+net worth. Account balances and asset valuations are collapsed into one
 daily, forward-filled series so the chart reads as one continuous line even
 though the two halves are updated at very different cadences.
 """
@@ -41,19 +42,20 @@ from app.schemas.net_worth import (
 CASH_ACCOUNT_TYPES = {
     AccountType.CHECKING,
     AccountType.DEBIT_CARD,
-    AccountType.SAVINGS,
     AccountType.CASH,
     AccountType.INVESTMENT,
 }
+DEPOSIT_ACCOUNT_TYPES = {AccountType.SAVINGS}
 
 RANGE_DAYS = {"30d": 30, "90d": 90, "1y": 365, "5y": 365 * 5}
 
 _CLASS_META: dict[str, tuple[str, str, str]] = {
-    # key -> (display name, color, lucide icon). Colors follow the dataviz
-    # skill's validated 8-slot order (blue, orange, aqua, yellow, magenta,
-    # green, violet, red) in this exact sequence — an adjacent-pair-safe
-    # order for a segmented bar/donut; do not reorder without re-validating.
-    "cash": ("Наличные", "#2a78d6", "wallet"),  # slot 1 blue
+    # key -> (display name, color, lucide icon). Colors use the dataviz
+    # skill's validated 8-slot palette (blue, orange, aqua, yellow, magenta,
+    # green, violet, red). Deposits occupy slot 8 beside Cash in the UI;
+    # their red is a category color, not a risk or loss status.
+    "cash": ("Свободные деньги", "#2a78d6", "wallet"),  # slot 1 blue
+    "deposits": ("Вклады", "#b84b54", "piggy-bank"),  # slot 8 red
     AssetClass.INVESTMENTS.value: ("Инвестиции", "#eb6834", "trending-up"),  # slot 2 orange
     AssetClass.CRYPTO.value: ("Криптовалюта", "#1baf7a", "bitcoin"),  # slot 3 aqua
     AssetClass.REAL_ESTATE.value: ("Недвижимость", "#eda100", "building-2"),  # slot 4 yellow
@@ -99,41 +101,52 @@ def _daily_series(events: list[tuple[date_, Decimal]], start: date_, end: date_)
     return points
 
 
-async def _cash_cumulative_events(session: AsyncSession) -> list[tuple[date_, Decimal]]:
+async def _account_cumulative_events(session: AsyncSession) -> dict[str, list[tuple[date_, Decimal]]]:
     accounts_result = await session.execute(select(Account.id, Account.type, Account.currency))
-    cash_accounts = {acc_id: currency for acc_id, acc_type, currency in accounts_result.all() if acc_type in CASH_ACCOUNT_TYPES}
-    cash_account_ids = set(cash_accounts)
+    account_groups = {
+        acc_id: ("cash" if acc_type in CASH_ACCOUNT_TYPES else "deposits", currency)
+        for acc_id, acc_type, currency in accounts_result.all()
+        if acc_type in CASH_ACCOUNT_TYPES or acc_type in DEPOSIT_ACCOUNT_TYPES
+    }
 
     txns_result = await session.execute(
         select(Transaction.date, Transaction.type, Transaction.amount_usd, Transaction.account_id, Transaction.transfer_account_id)
     )
 
-    delta_by_date: dict[date_, Decimal] = defaultdict(Decimal)
+    deltas: dict[str, dict[date_, Decimal]] = {
+        "cash": defaultdict(Decimal), "deposits": defaultdict(Decimal),
+    }
     for tx_date, tx_type, amount, account_id, transfer_account_id in txns_result.all():
-        if tx_type == TransactionType.INCOME and account_id in cash_account_ids:
-            delta_by_date[tx_date] += amount
-        elif tx_type == TransactionType.EXPENSE and account_id in cash_account_ids:
-            delta_by_date[tx_date] -= amount
+        source = account_groups.get(account_id)
+        destination = account_groups.get(transfer_account_id)
+        if tx_type == TransactionType.INCOME and source:
+            deltas[source[0]][tx_date] += amount
+        elif tx_type == TransactionType.EXPENSE and source:
+            deltas[source[0]][tx_date] -= amount
         elif tx_type == TransactionType.TRANSFER:
-            if account_id in cash_account_ids:
-                delta_by_date[tx_date] -= amount
-            if transfer_account_id in cash_account_ids:
-                delta_by_date[tx_date] += amount
+            if source:
+                deltas[source[0]][tx_date] -= amount
+            if destination:
+                deltas[destination[0]][tx_date] += amount
 
-    events: list[tuple[date_, Decimal]] = []
-    running = Decimal("0")
-    for day in sorted(delta_by_date):
-        running += delta_by_date[day]
-        events.append((day, running))
     balances = await _account_balances(session)
-    current_cash = Decimal("0")
-    for account_id, currency in cash_accounts.items():
+    current: dict[str, Decimal] = defaultdict(Decimal)
+    for account_id, (group, currency) in account_groups.items():
         balance = balances.get(account_id, Decimal("0"))
         if balance:
-            current_cash += money(balance * (await rate_to_usd(currency, date_.today())).rate)
-    if events or current_cash:
-        events.append((date_.today(), current_cash))
-    return events
+            current[group] += money(balance * (await rate_to_usd(currency, date_.today())).rate)
+
+    result: dict[str, list[tuple[date_, Decimal]]] = {}
+    for group, daily in deltas.items():
+        events: list[tuple[date_, Decimal]] = []
+        running = Decimal("0")
+        for day in sorted(daily):
+            running += daily[day]
+            events.append((day, running))
+        if events or current[group]:
+            events.append((date_.today(), current[group]))
+        result[group] = events
+    return result
 
 
 async def _asset_events_and_class_totals(
@@ -208,7 +221,8 @@ async def _capital_role_summary(session: AsyncSession, current_by_asset: dict[in
 
 
 async def _risk_level_summary(
-    session: AsyncSession, current_by_asset: dict[int, Decimal], cash_today: Decimal
+    session: AsyncSession, current_by_asset: dict[int, Decimal], cash_today: Decimal,
+    deposits_today: Decimal,
 ) -> list[RiskLevelSummary]:
     """Cross-cuts Cash + assets by user-tagged risk of loss — unlike
     capital_roles, Cash participates here: it's the zero-risk anchor an
@@ -226,6 +240,9 @@ async def _risk_level_summary(
     if cash_today:
         totals[RiskLevel.LOW] += cash_today
         items_by_level[RiskLevel.LOW].append(("cash", _CLASS_META["cash"][0], cash_today))
+    if deposits_today:
+        totals[RiskLevel.LOW] += deposits_today
+        items_by_level[RiskLevel.LOW].append(("deposits", _CLASS_META["deposits"][0], deposits_today))
 
     for asset_id, name, risk_level in asset_rows:
         value = current_by_asset.get(asset_id, Decimal("0"))
@@ -259,26 +276,28 @@ async def _risk_level_summary(
     return summaries
 
 
-def _resolve_start_date(range_key: str, cash_events: list[tuple[date_, Decimal]], asset_events: list[tuple[date_, Decimal]], today: date_) -> date_:
+def _resolve_start_date(range_key: str, account_events: dict[str, list[tuple[date_, Decimal]]], asset_events: list[tuple[date_, Decimal]], today: date_) -> date_:
     if range_key in RANGE_DAYS:
         return today - timedelta(days=RANGE_DAYS[range_key] - 1)
 
-    all_dates = [e[0] for e in cash_events] + [e[0] for e in asset_events]
+    all_dates = [day for events in account_events.values() for day, _ in events] + [e[0] for e in asset_events]
     return min(all_dates) if all_dates else today
 
 
 async def get_net_worth_summary(session: AsyncSession, range_key: str) -> NetWorthSummary:
     today = date_.today()
-    cash_events = await _cash_cumulative_events(session)
+    account_events = await _account_cumulative_events(session)
     asset_events, class_totals, current_by_asset = await _asset_events_and_class_totals(session)
     capital_roles = await _capital_role_summary(session, current_by_asset)
 
-    start = _resolve_start_date(range_key, cash_events, asset_events, today)
+    start = _resolve_start_date(range_key, account_events, asset_events, today)
 
-    cash_series = _daily_series(cash_events, start, today)
+    cash_series = _daily_series(account_events["cash"], start, today)
+    deposit_series = _daily_series(account_events["deposits"], start, today)
     asset_series = _daily_series(asset_events, start, today)
     series = [
-        NetWorthPoint(date=c.date, value=c.value + a.value) for c, a in zip(cash_series, asset_series, strict=True)
+        NetWorthPoint(date=c.date, value=c.value + d.value + a.value)
+        for c, d, a in zip(cash_series, deposit_series, asset_series, strict=True)
     ]
 
     current = series[-1].value if series else Decimal("0")
@@ -286,11 +305,15 @@ async def get_net_worth_summary(session: AsyncSession, range_key: str) -> NetWor
     change_amount = current - start_value
     change_percent = float(change_amount / start_value * 100) if start_value else None
 
-    # cash_events entries are already cumulative — the last one *is* today's total.
+    # Account event entries are already cumulative — the last one in each
+    # group is today's total, including the current exchange-rate valuation.
+    cash_events = account_events["cash"]
+    deposit_events = account_events["deposits"]
     cash_today = cash_events[-1][1] if cash_events else Decimal("0")
-    risk_levels = await _risk_level_summary(session, current_by_asset, cash_today)
+    deposits_today = deposit_events[-1][1] if deposit_events else Decimal("0")
+    risk_levels = await _risk_level_summary(session, current_by_asset, cash_today, deposits_today)
 
-    total = cash_today + sum(class_totals.values(), Decimal("0"))
+    total = cash_today + deposits_today + sum(class_totals.values(), Decimal("0"))
 
     def _percent(amount: Decimal) -> float:
         return float(amount / total * 100) if total else 0.0
@@ -298,6 +321,8 @@ async def get_net_worth_summary(session: AsyncSession, range_key: str) -> NetWor
     breakdown = []
     name, color, icon = _CLASS_META["cash"]
     breakdown.append(NetWorthBreakdownItem(key="cash", name=name, color=color, icon=icon, amount=cash_today, percent=_percent(cash_today)))
+    name, color, icon = _CLASS_META["deposits"]
+    breakdown.append(NetWorthBreakdownItem(key="deposits", name=name, color=color, icon=icon, amount=deposits_today, percent=_percent(deposits_today)))
     for asset_class in AssetClass:
         name, color, icon = _CLASS_META[asset_class.value]
         amount = class_totals.get(asset_class, Decimal("0"))
