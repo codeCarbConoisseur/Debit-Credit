@@ -84,6 +84,12 @@ Full Russian/English UI with a language switch in Settings, a light/dark/system 
 ### 💾 Full Backup & Restore
 Export your entire dataset — accounts, transactions, assets, budgets, goals — to a single JSON file at any time, and restore it later on a fresh install.
 
+### 💾 Extra features created by myself
+- Added a currency selector for income, expenses, and transfers. Aurum fetches the exchange rate to USD from Frankfurter and stores the original amount, applied rate and date, and USD amount with each transaction.
+- Account balances remain in each account’s currency. For transfers, users can enter the actual amount debited or received when the bank’s rate differs from the reference rate.
+- Summaries, budgets, reports, and net worth use USD. Currency selection is also available for recurring transactions, CSV imports, and crypto trades.
+- Savings accounts now appear separately as “Deposits” in net worth. They are excluded from “Available cash” and idle-cash alerts. Moving money between a card and a deposit does not change total net worth.
+
 ## 🚀 Getting Started
 
 Aurum ships as three containers — Postgres, a FastAPI backend, and an nginx-served frontend — wired together with Docker Compose. No local Python, Node, or Postgres installation needed; Docker is the only requirement.
