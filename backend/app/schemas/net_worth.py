@@ -31,7 +31,7 @@ class CapitalRoleSummary(BaseModel):
 
 
 class RiskLevelItem(BaseModel):
-    """One holding within a risk tier — Cash (key="cash") or a single asset
+    """One holding within a risk tier — Cash, Deposits, or a single asset
     (key=f"asset:{id}"). This list IS the diversification view: a tier with
     one item at 100% is concentrated, several items with even shares aren't,
     no separate score needed."""
@@ -43,9 +43,9 @@ class RiskLevelItem(BaseModel):
 
 
 class RiskLevelSummary(BaseModel):
-    """Cash + assets grouped by user-tagged risk of loss (see RiskLevel) —
-    another cross-cut, like capital_roles, but Cash participates here since
-    it's the zero-risk anchor an 80/20-style allocation rule needs."""
+    """Account balances + assets grouped by user-tagged risk of loss
+    (see RiskLevel) — another cross-cut, like capital_roles. Available cash
+    and deposits participate as the low-risk anchor of the allocation."""
 
     risk_level: str
     label: str
